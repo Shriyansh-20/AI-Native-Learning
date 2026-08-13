@@ -1,18 +1,18 @@
-## The problem statement
+# The problem statement
 
 The agent observes a specific data change or data batch request. It must decide whether to Accept, Repair, Isolate, or Reject it because it does not know whether the data is actually valid and healthy or contains a quality problem.
 
 
 
-## The project objective
+# The project objective
 
 Develop an intelligent data-quality agent that evaluates incoming data changes or batches under uncertainty, combines multiple sources of evidence, and selects the most appropriate action—Accept, Repair, Isolate, or Reject while minimizing the cost of incorrect decisions.
 
 
 
-## Technical terms
+# Technical terms
 
-# Core — must understand
+## Core — must understand
 1. Data Quality Assessment
 2. Data Profiling
 3. Data Validation
@@ -21,18 +21,18 @@ Develop an intelligent data-quality agent that evaluates incoming data changes o
 6. POMDP (Partially Observable Markov Decision Process)
 7. Cost-Sensitive Decision Making
 
-# Action/agent layer
+## Action/agent layer
 8. Data Repair / Automated Data Cleaning
 9. Active Sensing / Active Learning
 10. Human-in-the-Loop Data Quality
 
-# Supporting concepts
+## Supporting concepts
 11. Data Quality Rules
 12. Out-of-Distribution (OOD) Detection
 
 
 
-## Search queries
+# Search queries
 
 1. What is data quality?
 2. What is the structure of the data being stored?
@@ -42,7 +42,7 @@ Develop an intelligent data-quality agent that evaluates incoming data changes o
 
 
 
-## Five to ten verified Reddit communities
+# Five to ten verified Reddit communities
 
 1. https://www.reddit.com/r/dataengineering/
 2. https://www.reddit.com/r/datascience/
@@ -54,7 +54,7 @@ Develop an intelligent data-quality agent that evaluates incoming data changes o
 
 
 
-## Relevant X accounts
+# Relevant X accounts
 1. https://x.com/AndrewYNg
 2. https://x.com/chipro
 3. https://x.com/svlevine
@@ -62,9 +62,9 @@ Develop an intelligent data-quality agent that evaluates incoming data changes o
 
 
 
-## Questions that you want to answer
+# Questions that you want to answer
 
-# Hidden state
+## Hidden state
 What do we not know when a data batch arrives?
 
 1. Is the data genuinely wrong?
@@ -75,7 +75,7 @@ What do we not know when a data batch arrives?
 6. Is the detected anomaly caused by a data problem or a genuine change in the real world?
 
 
-# Evidence
+## Evidence
 What evidence should change our belief?
 
 1. Historical data?
@@ -89,7 +89,7 @@ What evidence should change our belief?
 9. Human/domain knowledge?
 
 
-# Actions
+## Actions
 When should the agent:
 
 1. Accept: Does this push data directly to production or to a staging area?
@@ -101,7 +101,7 @@ When should the agent:
 4. Reject: What downstream pipeline processes fail when a batch is rejected?
 
 
-# Errors
+## Errors
 What is worse?
 
 1. What is the business cost of a False Accept (passing bad data to downstream applications)?
