@@ -36,8 +36,17 @@ Develop an intelligent data-quality agent that evaluates incoming data changes o
 
 1. What is data quality?
 2. What is the structure of the data being stored?
+   - What schema/constraints exist?
+   - What relationships or dependencies exist?
+   - Does the structure differ significantly across database types?
 3. What metrics/dimensions determine whether data is healthy or problematic?
+   - What characteristics indicate good data quality?
+   - What characteristics indicate a potential quality issue?
+   - Which issues are serious enough to reject versus potentially repair?
 4. What operations/changes can happen to the data?
+   - What kinds of changes can occur?
+   - What constraints exist on those changes?
+   - Are some operations inherently riskier than others?
 5. What happens when a data-quality issue is detected?
 
 
