@@ -1,12 +1,10 @@
 # The problem statement
 
-The agent observes a specific data change or data batch request. It must decide whether to Accept, Repair, Isolate, or Reject it because it does not know whether the data is actually valid and healthy or contains a quality problem.
-
-
+The agent observes an incoming data batch and its validation metadata. It must select Accept, Repair, Isolate, or Reject because the true underlying health and semantic validity of the data cannot be directly observed at ingestion time.
 
 # The project objective
 
-Develop an intelligent data-quality agent that evaluates incoming data changes or batches under uncertainty, combines multiple sources of evidence, and selects the most appropriate action—Accept, Repair, Isolate, or Reject while minimizing the cost of incorrect decisions.
+To design, implement, and evaluate an autonomous, cost-sensitive decision agent for data quality triage. The agent models the latent data health state as a probability distribution over concrete possible worlds, gathers evidence based on information gain, and chooses actions that minimize total expected business loss (balancing pipeline downtime, human reviewer overload, and downstream silent data corruption).
 
 
 
@@ -53,25 +51,41 @@ Develop an intelligent data-quality agent that evaluates incoming data changes o
 
 # Five to ten verified Reddit communities
 
-1. https://www.reddit.com/r/dataengineering/
-2. https://www.reddit.com/r/datascience/
+1. https://www.reddit.com/r/dataengineering/ -> Primary community of data engineers managing production ETL/ELT pipelines, circuit breakers, and data downtime incidents.
+2. https://www.reddit.com/r/datascience/ -> Analytics practitioners who experience the downstream business costs of corrupted data.
 3. https://www.reddit.com/r/learnmachinelearning/
-4. https://www.reddit.com/r/SQL/
-5. https://www.reddit.com/r/DataEngineeringPH/
-6. https://www.reddit.com/r/ETL/
-7. https://www.reddit.com/r/MachineLearning/
+4. https://www.reddit.com/r/SQL/ -> Good for basic sql related doubts 
+5. https://www.reddit.com/r/DataEngineeringPH/ -> Students discussing doubts 
+6. https://www.reddit.com/r/ETL/ -> Pipeline developers working on batch ingestion failures and automated remediation patterns.
+7. https://www.reddit.com/r/MachineLearning/. -> ML researchers and engineers dealing with feature store validation, silent training-data poisoning, and drift detection.
+8. https://www.reddit.com/r/ExperiencedDevs/ -> Senior engineering leaders discussing human escalation fatigue, paging costs, and automated triage policies.
+9. https://www.reddit.com/r/database/ -> Database administrators focused on schema evolution, integrity constraints, and ACID durability.
 
 
 
 # Relevant X accounts
-1. https://x.com/AndrewYNg
-2. https://x.com/chipro
-3. https://x.com/svlevine
-4. https://x.com/eugeneyan
+1. https://x.com/chipro -> Author of *Designing Machine Learning Systems*; expert on real-time streaming data architectures.
+2. https://x.com/eugeneyan -> Applied ML lead; writes extensively on operational ML patterns and data evaluation.
+3. https://x.com/BarrMoses_MC -> CEO of Monte Carlo Data; established Data Observability.
+4. https://x.com/prukalpa -> Co-founder of Atlan; active metadata, lineage, and governance.
+5. https://x.com/wesmckinn -> Creator of Pandas / Apache Arrow; expert on tabular data representations.
+6. https://x.com/shinjikim -> Founder of Select Star; metadata and lineage tracking.
+7. https://x.com/GergelyOrosz -> Author of The Pragmatic Engineer; writes on incident triage and on-call costs.
+8. https://x.com/gwenshap -> Distributed streaming systems and real-time validation.
+
+
+
+# Key Foundational References & Papers
+1. **Breck et al. (Google MLSys)**: *"Data Validation for Machine Learning"* (Introduces TensorFlow Data Validation / TFDV at petabyte scale).
+2. **Hynes et al. (MLSys)**: *"Data Linter: Lightweight Automated Sanity Checking for Data Science"*.
+3. **Schelter et al. (VLDB)**: *"Automating Large-Scale Data Quality Verification"* (AWS Deequ framework).
+4. **SARC-DQ (arXiv:2607.26313, 2026)**: *"Runtime Data-Quality Gating for Agentic AI Silent Semantic Failures"*.
+5. **Sanderson (O'Reilly)**: *"Practical Data Contracts: Scalable Data Quality at the Source"*.
 
 
 
 # Questions that you want to answer
+
 
 ## Hidden state
 What do we not know when a data batch arrives?
@@ -96,6 +110,15 @@ What evidence should change our belief?
 7. Relationships with other datasets?
 8. Statistical distribution?
 9. Human/domain knowledge?
+
+
+## Questions for Community Discussions
+
+- What is the most insidious data corruption you've seen that passed all schema and non-null checks?
+- How do you distinguish benign real-world shifts (e.g., Black Friday traffic) from upstream pipeline bugs?
+
+- Which validation signals give the highest information gain (e.g., column-level lineage vs. statistical divergence vs. producer runtime)?
+- How reliably can automated profiling catch encoding/format shifts without false alarms?
 
 
 ## Actions
