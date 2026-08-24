@@ -1,163 +1,82 @@
 # Failure Analysis
 
-## Summary
+## 1. Overall Evaluation
 
-5 / 40 batches had incorrect latent-state predictions.
+The final LLM + Bayesian agent was evaluated on **40 synthetic test batches** spanning four latent data-quality states.
 
-Accuracy: 87.5%
+### Overall State-Inference Performance
 
-All corrupted batches were detected:
-S4 recall = 100%
+| Metric | Result |
+|---|---:|
+| **Accuracy** | **87.5%** |
+| **Macro Precision** | **88.5%** |
+| **Macro Recall** | **85.4%** |
+| **Macro F1** | **83.8%** |
 
-The five failures were concentrated in Healthy and Benign Drift.
+The agent correctly inferred the latent state for:
 
----
+**35 / 40 batches**
 
-## Failure Mode 1 — Prior Bias Toward Healthy
-
-Affected: Batch 6, Batch 32
-
-In both cases, the LLM assigned its highest likelihood to the
-correct state, S2_BENIGN_DRIFT.
-
-Batch 6:
-P(E|Healthy) = 0.25
-P(E|Drift)   = 0.80
-
-Batch 32:
-P(E|Healthy) = 0.15
-P(E|Drift)   = 0.80
-
-However, the assumed prior strongly favors Healthy:
-
-P(Healthy) = 0.75
-P(Drift)   = 0.12
-
-After Bayesian updating, Healthy became the most probable state.
-
-Batch 6:
-Healthy 57.08% vs Drift 29.22%
-
-Batch 32:
-Healthy 45.73% vs Drift 39.02%
-
-### Takeaway
-
-These are not primarily LLM interpretation failures.
-
-They expose sensitivity to the assumed prior.
-
-The healthy-skewed experimental prior can overpower evidence
-supporting less common states.
-
-### Improvement
-
-Estimate priors from historical labelled batches and perform
-prior-sensitivity experiments.
+Five batches were incorrectly classified.
 
 ---
 
-## Failure Mode 2 — Isolated Critical Signals Were Overweighted
+## 2. Performance by State
 
-Affected: Batch 25, Batch 38
+| State | Precision | Recall | F1 | Support |
+|---|---:|---:|---:|---:|
+| `S1_HEALTHY` | 91.7% | 91.7% | 91.7% | 24 |
+| `S2_BENIGN_DRIFT` | 100.0% | **50.0%** | 66.7% | 6 |
+| `S3_FORMAT_GLITCH` | 100.0% | **100.0%** | 100.0% | 5 |
+| `S4_CORRUPTED` | 62.5% | **100.0%** | 76.9% | 5 |
 
-Both batches were labelled Healthy but contained one null receiver
-among 100 records.
+### Safety-Critical Result
 
-No other major anomaly was detected.
+For corrupted batches:
 
-Despite this, the LLM assigned:
+- **Recall: 100%**
+- Precision: 62.5%
+- F1: 76.9%
 
-Batch 25:
-P(E|Corrupted) = 0.85
+All **5 / 5 genuinely corrupted batches were identified as corrupted**.
 
-Batch 38:
-P(E|Corrupted) = 0.85
+However, corruption precision was only **62.5%**, meaning some non-corrupted batches were incorrectly classified as corrupted.
 
-The resulting corruption posteriors were 48.24% and 60.80%.
-
-### Takeaway
-
-The reasoner appears to treat the presence of a null receiver as
-strong corruption evidence without sufficiently accounting for its
-prevalence (1/100) and the otherwise healthy batch.
-
-### Improvement
-
-Make anomaly prevalence and surrounding evidence explicit in the
-reasoning prompt.
-
-For example:
-
-"Consider not only whether an anomaly exists, but its frequency,
-severity, co-occurring signals, and whether the remainder of the
-batch is internally consistent."
+This is visible in the failure cases below.
 
 ---
 
-## Failure Mode 3 — Drift Requires Operational Context
+## 3. Where Did the Errors Occur?
 
-Affected: Batch 24
+The confusion matrix was:
 
-Evidence included:
+| True ↓ / Predicted → | Healthy | Drift | Format | Corrupted |
+|---|---:|---:|---:|---:|
+| **Healthy** | 22 | 0 | 0 | **2** |
+| **Benign Drift** | **2** | 3 | 0 | **1** |
+| **Format Glitch** | 0 | 0 | 5 | 0 |
+| **Corrupted** | 0 | 0 | 0 | 5 |
 
-- 57 lowercase currencies
-- median amount 5322.94
-- distribution surge
-- one null receiver
+This immediately reveals the main weakness:
 
-The true state was Benign Drift, but the initial posterior ranked
-Corrupted highest at 36.70%.
+> **Benign Drift was the hardest state for the system to recognize.**
 
-Additional contextual evidence explaining the currency change,
-amount surge, and null field changed the belief to:
+Only **3 of 6 benign-drift batches** were correctly identified, giving it **50% recall**.
 
-Benign Drift: 65.59%
-Corrupted:     4.37%
+By contrast:
 
-### Takeaway
+- Healthy: 22/24 correctly identified
+- Format Glitch: 5/5
+- Corrupted: 5/5
 
-Batch statistics alone may not distinguish legitimate real-world
-change from pipeline corruption.
+The five incorrect state inferences were:
 
-Producer context, deployment history, business events, or human
-review can provide high-information evidence.
+| Batch | Ground Truth | Predicted | Confidence | Action | Realized Simulated Cost |
+|---|---|---|---:|---|---:|
+| 6 | Benign Drift | Healthy | 57.08% | REPAIR | ₹2,500 |
+| 24 | Benign Drift | Corrupted | 36.70% | ISOLATE | ₹5,000 |
+| 25 | Healthy | Corrupted | 48.24% | ISOLATE | ₹7,000 |
+| 32 | Benign Drift | Healthy | 45.73% | REPAIR | ₹2,500 |
+| 38 | Healthy | Corrupted | 60.80% | ISOLATE | ₹7,000 |
 
-This motivates the sequential evidence / belief-update loop in the
-architecture.
-
----
-
-# Policy Behaviour Under Inference Failure
-
-Importantly, none of the five inference errors directly caused an
-aggressive REJECT decision.
-
-| Batch | Inference Error | Action | Realized Cost |
-|---|---|---|---:|
-| 6 | Drift → Healthy | REPAIR | ₹2,500 |
-| 24 | Drift → Corrupted | ISOLATE | ₹5,000 |
-| 25 | Healthy → Corrupted | ISOLATE | ₹7,000 |
-| 32 | Drift → Healthy | REPAIR | ₹2,500 |
-| 38 | Healthy → Corrupted | ISOLATE | ₹7,000 |
-
-The cost-sensitive layer therefore partially contained errors made
-by the inference layer.
-
-This illustrates why the project evaluates both state inference and
-decision cost.
-
-A wrong state prediction does not necessarily imply the worst
-possible decision.
-
----
-
-# Improvements Identified
-
-1. Estimate priors from real historical data rather than assuming them.
-2. Evaluate sensitivity to different priors.
-3. Include anomaly prevalence, not only anomaly presence, in LLM reasoning.
-4. Incorporate operational context such as deployments and business events.
-5. Calibrate LLM likelihood estimates on a larger labelled dataset.
-6. Expand beyond the current 40 synthetic batches.
-7. Use human review / additional evidence when posterior uncertainty remains high.
+These five errors fall into three recurring failure modes.
