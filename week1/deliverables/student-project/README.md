@@ -1,117 +1,212 @@
-# Student Project — Week 1
+# Data Quality Triage Agent
 
-## Overview
+An experimental agent for **data-quality triage under uncertainty**.
 
-This repository contains the Week 1 deliverable for the student project in the AI-Native course. It documents the experiment, data, code, and brief findings so you can reproduce and understand what we've done so far.
+Given a batch of payment records, the agent maintains a belief over four possible hidden states:
 
-## What we completed
-- Implemented a simple agent and environment prototype in `src/agent.py` and `src/environment.py`.
-- Created a small test dataset in `data/test_batches.json` used for quick experiment runs.
-- Added an experiment script `experiments/run_experiment.py` to run the agent on the dataset and produce results.
-- Drafted a short report and discussion artifacts under `paper/` and `social/`.
+- `S1_HEALTHY`
+- `S2_BENIGN_DRIFT`
+- `S3_FORMAT_GLITCH`
+- `S4_CORRUPTED`
 
-## Repository structure
+and chooses one of:
 
-- `src/` — core code: `agent.py`, `environment.py`.
-- `data/` — input data used by experiments (`test_batches.json`).
-- `experiments/` — runnable experiment scripts (`run_experiment.py`).
-- `paper/` — LaTeX source of the paper, bibliography, and figures.
-- `results/` — generated outputs from experiments (metrics, logs, saved models).
-- `decisions/` — decision records and notes.
-- `social/` — short-format posts (LinkedIn, X/Twitter drafts).
-- `README.md` — this file.
+`ACCEPT` · `REPAIR` · `ISOLATE` · `REJECT`
 
-## How to run (quick)
+The goal is to avoid treating every anomaly as a simple binary validation failure.
 
-1. Open a terminal in this folder:
+---
+
+## How It Works
+
+```text
+Incoming Batch
+      ↓
+Evidence Extraction
+      ↓
+Structured Evidence
+      ↓
+LLM estimates P(Evidence | State)
+      ↓
+Bayesian Update
+      ↓
+P(State | Evidence)
+      ↓
+Expected-Loss Policy
+      ↓
+ACCEPT / REPAIR / ISOLATE / REJECT
+```
+
+The LLM only interprets the evidence and estimates likelihoods.
+
+Bayesian updating and action selection are deterministic Python calculations.
+
+The action is selected by minimizing:
+
+```text
+Expected Loss(action)
+= Σ P(State | Evidence) × Cost(action, State)
+```
+
+---
+
+## Evaluation
+
+The final experiment uses `data/test_batches_v2.json`:
+
+```text
+40 synthetic batches
+100 transactions per batch
+4,000 transactions total
+```
+
+Ground-truth distribution:
+
+| State | Batches |
+|---|---:|
+| Healthy | 24 |
+| Benign Drift | 6 |
+| Format Glitch | 5 |
+| Corrupted | 5 |
+
+The experiment used `kimi-latest` to estimate the evidence likelihoods.
+
+LLM outputs for the 40 evaluation batches are cached in:
+
+```text
+data/llm_likelihood_cache.json
+```
+
+---
+
+## Run the Agent
+
+Run commands from `student-project/`.
+
+### Full evaluation
 
 ```bash
-cd week1/deliverables/student-project
+python3 -m experiments.run_experiment
 ```
 
-2. Run the experiment script (requires Python 3.8+):
+Runs all 40 batches and reports costs, accuracy, precision/recall/F1,
+action distribution, confusion matrix, and failure cases.
+
+### Inspect one decision
 
 ```bash
-python3 experiments/run_experiment.py
+python3 -m experiments.inspect_batch 24
 ```
 
-Notes:
-- The script is written for a small local dataset (`data/test_batches.json`) so it should run quickly without extra dependencies.
-- If the script imports modules from `src/`, run it from the project root as shown above so Python finds `src` on the path.
+Replace `24` with any batch ID from `1` to `40`.
 
-## Findings (so far)
+This shows the complete trace:
 
-- The prototype agent completes basic interactions with the environment and logs results to `results/`.
-- Initial experiment runs are primarily sanity checks; no final evaluation yet.
-
-## Next steps
-
-1. Add a requirements file and document dependencies.
-2. Improve experiment logging and provide a small evaluation script.
-3. Expand the dataset and run longer experiments; capture and summarize metrics in `results/`.
-
-## Contact / Notes
-If anything here looks off or you want the README expanded (e.g., add dependency list, usage examples, or run flags), tell me what to include and I will update it.
-
-## Dataset creation (how we made `data/test_batches.json`)
-
-We generate synthetic, labeled batches with `src/environment.py` using `generate_batch` and `generate_test_suite`.
-
-- Each batch contains 100 synthetic transactions with fields: `transaction_id`, `timestamp`, `sender_account`, `receiver_account`, `amount`, `currency`, and `status`.
-- The environment supports four hidden states (used as ground truth for evaluation): `S1_HEALTHY`, `S2_BENIGN_DRIFT`, `S3_FORMAT_GLITCH`, `S4_CORRUPTED`.
-- `generate_test_suite()` produces 40 batches with a controlled distribution (24 healthy, 6 benign drift, 5 format glitch, 5 corrupted) and writes them to `data/test_batches.json`.
-
-State-specific generation behaviors:
-- `S1_HEALTHY`: normal transactional data (clean timestamps, typical amounts, uppercase currency, trimmed status).
-- `S2_BENIGN_DRIFT`: legitimate volume/amount surge (amounts scaled ~3.2x) and occasional lowercase currency tokens (``inr``) to simulate non-critical drift.
-- `S3_FORMAT_GLITCH`: recoverable format issues such as dates in `DD/MM/YYYY` format and padded status strings (`" SUCCESS "`).
-- `S4_CORRUPTED`: critical semantic corruption introduced rarely: negative amounts, extreme overflow amounts, or `null` receiver accounts.
-
-## Cases we handle (evidence extracted)
-
-The agent's `extract_evidence` (in `src/agent.py`) looks for indicators used to form a compact evidence vector:
-- Negative amounts, extreme overflows, or null receivers -> flagged as `has_critical_error`.
-- Date formats like `DD/MM/YYYY` or extra whitespace in `status` -> flagged as `has_format_error`.
-- Large median amounts or lowercase currency -> flagged as `has_distribution_surge`.
-
-These flags are used to compute likelihoods for each hidden state (see `compute_likelihood`). The heuristics map common problems to higher likelihoods for particular states (e.g., `has_critical_error` strongly points to `S4_CORRUPTED`).
-
-## No LLM API — how decisions are made
-
-We do not call any external LLM APIs for triage. Decision making is fully algorithmic and local:
-
-1. Extract evidence from a batch using `PaymentTriageAgent.extract_evidence(records)`.
-2. Compute per-state likelihoods with `compute_likelihood(evidence, state)`.
-3. Multiply the per-state likelihoods by the prior (`self.prior`) and normalize to get a posterior belief over states (`update_belief`).
-4. Compute expected loss per action using the `COST_MATRIX` and pick the action that minimizes expected loss (`decide_action`).
-
-This is a Bayesian triage pipeline (prior -> likelihood -> posterior -> decision) implemented deterministically in `src/agent.py`.
-
-## How we decide where to place/label a current batch (assigning a hidden state)
-
-The environment provides `true_state` only for testing and evaluation. In production or streaming runs, we infer a batch's most likely hidden state from the agent's posterior belief.
-
-Simple tagging rules we use or recommend:
-- Argmax tag: `assigned_state = max(belief, key=belief.get)` — tag the batch with the highest posterior probability.
-- Threshold tagging: if `belief['S4_CORRUPTED'] > 0.5` then label as `S4_CORRUPTED`; otherwise if `max(belief.values()) > 0.6` assign argmax; otherwise mark as `UNSURE` and `ISOLATE` for human review.
-
-Example (pseudo-code):
-
-```python
-evidence = agent.extract_evidence(records)
-belief = agent.update_belief(evidence)
-assigned = max(belief, key=belief.get)
-if belief['S4_CORRUPTED'] > 0.5:
-	# strong corruption signal
-	label = 'S4_CORRUPTED'
-elif belief[assigned] > 0.6:
-	label = assigned
-else:
-	label = 'ISOLATE'  # conservative fallback
+```text
+Evidence
+  ↓
+Prior
+  ↓
+LLM Likelihoods
+  ↓
+Posterior
+  ↓
+Expected Losses
+  ↓
+Action
 ```
 
-Why use thresholds/fallbacks:
-- Posterior probabilities quantify uncertainty. Using a threshold avoids overconfident mislabels when evidence is ambiguous.
-- Conservative actions like `ISOLATE` or manual review help avoid costly errors (see the `COST_MATRIX` penalties in `src/agent.py`).
+For example:
 
-If you'd like, I can add a small helper function (e.g., `tag_batch(records, agent, thresholds)`) and examples to the repo to demonstrate automated labeling and safe fallbacks.
+```bash
+python3 -m experiments.inspect_batch 1
+```
+
+shows a healthy case, while Batch 24 shows one of the ambiguous failure cases.
+
+### Test belief updating
+
+```bash
+python3 -m experiments.belief_update_demo
+```
+
+This demonstrates how new contextual evidence can update an existing posterior and trigger a new expected-loss calculation.
+
+---
+
+## Results
+
+### State Inference
+
+```text
+Overall Accuracy: 87.5%
+Macro Precision:  88.5%
+Macro Recall:     85.4%
+Macro F1:         83.8%
+Corrupted Recall: 100% (5/5)
+```
+
+### Simulated Decision Cost
+
+| System | Cost |
+|---|---:|
+| Naive Accept | ₹5,013,700 |
+| Strict Reject | ₹502,500 |
+| **LLM + Bayesian Agent** | **₹68,800** |
+
+This corresponds to a simulated cost reduction of:
+
+- **98.6% vs Naive Accept**
+- **86.3% vs Strict Reject**
+
+These costs come from an experimental cost matrix and are **not measured financial savings**.
+
+---
+
+## Example: Updating a Belief
+
+Batch 24 was initially inferred as `S4_CORRUPTED`, although its ground truth was `S2_BENIGN_DRIFT`.
+
+After additional operational context:
+
+| State | Before | After |
+|---|---:|---:|
+| Benign Drift | 30.58% | **74.73%** |
+| Corrupted | 36.70% | **3.16%** |
+
+The inferred state changed substantially, while the minimum-cost action remained `ISOLATE`.
+
+---
+
+## Project Structure
+
+```text
+data/
+    test_batches_v2.json
+    llm_likelihood_cache.json
+
+src/
+    agent.py
+    llm_inference.py
+
+experiments/
+    run_experiment.py
+    inspect_batch.py
+    belief_update_demo.py
+
+research-file.md
+discussion-record.md
+failure-analysis.md
+paper/
+```
+
+---
+
+## More Detail
+
+- `failure-analysis.md` — incorrect predictions and decision traces
+- `research-file.md` — research and problem formulation
+- `discussion-record.md` — practitioner/community discussions
+- `paper/` — complete academic write-up
+
+The benchmark, prior, and cost matrix are experimental constructs. The current results should therefore be interpreted as a controlled prototype rather than evidence of production reliability.
