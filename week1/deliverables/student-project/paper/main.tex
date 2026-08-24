@@ -1,0 +1,687 @@
+\documentclass{article}
+
+\usepackage{ijcai26}
+\usepackage{times}
+\usepackage{soul}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage[utf8]{inputenc}
+\usepackage[small]{caption}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{microtype}
+\usepackage{xcolor}
+
+\urlstyle{same}
+
+\title{Data Quality Triage Under Uncertainty:\\
+An LLM-Assisted Bayesian Decision Agent}
+
+\author{
+Shriyansh Sinha
+\affiliations
+AI-Native Learning
+\emails
+shriyansh20sinha@gmail.com
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Data-quality systems commonly map validation failures directly to actions such as accepting or rejecting a batch. This can be inadequate when the same observable anomaly is compatible with multiple underlying causes and the consequences of different actions are asymmetric. This work studies data-quality triage as a decision problem under uncertainty. We construct a small agent that extracts deterministic evidence from payment-data batches, uses a large language model (LLM) to estimate state-conditional evidence likelihoods, combines these likelihoods with an explicit prior through Bayesian updating, and selects among \texttt{ACCEPT}, \texttt{REPAIR}, \texttt{ISOLATE}, and \texttt{REJECT} by minimizing expected simulated loss. The system is evaluated on 40 synthetic batches containing 4,000 payment records across four hidden data-quality states. In this controlled benchmark, the final system achieves 87.5\% state-inference accuracy and identifies all five corrupted batches. Under an experimentally constructed cost matrix, its total simulated decision cost is INR~68,800, compared with INR~5,013,700 for an always-accept baseline and INR~502,500 for a strict circuit-breaker baseline. Failure analysis shows sensitivity to the assumed prior, overreaction to isolated anomalies, and dependence on missing operational context. A sequential belief-update example further demonstrates how additional evidence can substantially revise the inferred state without necessarily changing the minimum-expected-loss action. The results are intended as an evaluation of the decision formulation in a synthetic environment, rather than evidence of production reliability.
+\end{abstract}
+
+
+\section{Introduction}
+
+Data validation often appears deterministic: a rule is evaluated and a record either passes or fails. The operational decision following that observation, however, may be considerably less certain. A sudden change in transaction values could indicate corruption, but it could also result from a legitimate promotion. Lowercase currency codes could reflect an upstream representation change rather than invalid data. A missing field could be a critical semantic failure in one schema and an optional legacy field in another.
+
+This distinction motivates a separation between \emph{observing an anomaly} and \emph{deciding what to do about it}. The observable evidence may be incomplete, several underlying states may remain plausible, and different actions may have substantially different consequences.
+
+This project investigates a small data-quality triage agent built around that separation. The agent reasons over four hidden states:
+\texttt{S1\_HEALTHY},
+\texttt{S2\_BENIGN\_DRIFT},
+\texttt{S3\_FORMAT\_GLITCH}, and
+\texttt{S4\_CORRUPTED}.
+It can take four actions:
+\texttt{ACCEPT},
+\texttt{REPAIR},
+\texttt{ISOLATE}, and
+\texttt{REJECT}.
+
+The final system has three distinct reasoning stages. First, deterministic Python code extracts structured evidence from the raw batch. Second, an LLM estimates the likelihood of that evidence under each candidate hidden state. Third, deterministic Bayesian and decision-theoretic calculations convert those likelihoods into a posterior belief and an action.
+
+The central question is therefore not simply whether an LLM can classify a batch correctly. Instead, the project asks whether explicit uncertainty and asymmetric action costs can support useful decisions even when state inference is imperfect.
+
+The main contributions of the prototype are:
+
+\begin{itemize}
+    \item an explicit hidden-state formulation for data-quality triage;
+    \item separation of deterministic evidence extraction, LLM-based evidence interpretation, Bayesian belief updating, and cost-sensitive action selection;
+    \item comparison with simple always-accept and strict circuit-breaker baselines;
+    \item evaluation on a controlled synthetic benchmark with known hidden states;
+    \item analysis of individual failure cases and a sequential belief-update example.
+\end{itemize}
+
+The scope is intentionally limited. The dataset, prior, and cost matrix are experimental constructs, and the results should not be interpreted as production performance.
+
+
+\section{Background and Motivation}
+
+Data-quality research includes dimensions such as validity, completeness, consistency, and accuracy, while anomaly detection focuses on identifying observations that deviate from expected behaviour \cite{batini2009methodologies,chandola2009anomaly}. These approaches provide useful signals, but detecting an anomaly does not by itself determine the correct operational response.
+
+The decision problem is closer to Bayesian decision theory: an agent has uncertainty over the underlying state of the world and must choose an action whose consequences depend on that unknown state \cite{berger1985statistical}. The appropriate decision can therefore depend on both posterior belief and the relative cost of mistakes.
+
+Large language models provide a complementary capability. Rather than using an LLM as an unconstrained end-to-end decision maker, this work uses it for a narrower interpretation task: estimating how compatible a structured set of observations is with several explicitly defined hypotheses. The resulting values are subsequently processed by transparent probabilistic and cost-sensitive logic.
+
+This decomposition was also motivated by practitioner discussions conducted during project development. Those discussions emphasized that apparent anomalies often require operational context and that isolation or human review may be preferable to immediate rejection. These discussions are documented separately in the project repository and are treated as qualitative design input rather than empirical evidence.
+
+
+\section{Problem Formulation}
+
+Let the hidden state of a batch be
+
+\[
+S \in
+\{
+S_1,S_2,S_3,S_4
+\},
+\]
+
+where
+
+\begin{align*}
+S_1 &= \text{Healthy},\\
+S_2 &= \text{Benign Drift},\\
+S_3 &= \text{Format Glitch},\\
+S_4 &= \text{Corrupted}.
+\end{align*}
+
+The agent cannot directly observe \(S\). Instead, it observes evidence \(E\) extracted from the incoming batch.
+
+The available action set is
+
+\[
+A =
+\{
+\texttt{ACCEPT},
+\texttt{REPAIR},
+\texttt{ISOLATE},
+\texttt{REJECT}
+\}.
+\]
+
+The objective is not necessarily to choose an action corresponding directly to the most probable state. The objective is to choose the action with the lowest expected loss given the current belief over states.
+
+For each action \(a\) and hidden state \(s\), the experiment defines a cost
+
+\[
+C(a,s).
+\]
+
+Given posterior belief \(P(s\mid E)\), the expected loss of action \(a\) is
+
+\[
+\mathbb{E}[L(a)\mid E]
+=
+\sum_s
+P(s\mid E)C(a,s).
+\]
+
+The selected action is
+
+\[
+a^*
+=
+\arg\min_a
+\mathbb{E}[L(a)\mid E].
+\]
+
+This formulation allows a conservative action to be selected even when the most probable state is benign, provided that a lower-probability dangerous state has sufficiently severe consequences.
+
+
+\section{Agent Design}
+
+\subsection{Evidence Extraction}
+
+Raw transaction records are first processed deterministically. The current implementation extracts:
+
+\begin{itemize}
+    \item number of records;
+    \item number of negative amounts;
+    \item number of amounts above 500,000;
+    \item number of null receiver accounts;
+    \item number of timestamps using a slash-based date representation;
+    \item number of status values containing leading or trailing whitespace;
+    \item number of lowercase currency values; and
+    \item median transaction amount.
+\end{itemize}
+
+Three additional summary indicators are derived:
+
+\begin{itemize}
+    \item \texttt{critical}: at least one negative amount, overflow value,
+    or null receiver is present;
+    \item \texttt{format}: at least one slash-formatted date or padded
+    status value is present;
+    \item \texttt{surge}: the median amount exceeds 2000 or at least one
+    lowercase currency value is present.
+\end{itemize}
+
+These features are deliberately simple. Their purpose is to create a controlled evidence representation rather than a comprehensive production data-quality profiler.
+
+
+\subsection{LLM Evidence Reasoner}
+
+The structured evidence is passed to an LLM rather than the complete set of raw transactions.
+
+For each state \(S_i\), the model is asked to estimate
+
+\[
+L_i=P(E\mid S_i).
+\]
+
+The model is explicitly instructed that these values are likelihoods rather than posterior probabilities, need not sum to one, and should not be used by the model to choose an action.
+
+The experiment used \texttt{kimi-latest}, temperature 0, and a maximum generation budget of 2000 tokens. The response is required to contain one numeric value in the interval \([0,1]\) for each of the four states. Responses are validated before being used by the Bayesian component.
+
+This design confines the LLM to evidence interpretation. The prior, normalization, expected-loss calculation, and final action remain explicit program logic.
+
+
+\subsection{Prior Belief}
+
+The experimental prior is
+
+\[
+P(S)
+=
+[0.75,\;0.12,\;0.08,\;0.05].
+\]
+
+Thus,
+
+\begin{align*}
+P(S_1)&=0.75,\\
+P(S_2)&=0.12,\\
+P(S_3)&=0.08,\\
+P(S_4)&=0.05.
+\end{align*}
+
+These probabilities are assumptions used for the prototype. They were not estimated from the 40-batch benchmark or from historical production data. In a deployed system, estimating and periodically updating these base rates would be necessary.
+
+
+\subsection{Bayesian Update}
+
+For an LLM-produced likelihood vector, the agent computes
+
+\[
+P(S_i\mid E)
+=
+\frac{
+P(E\mid S_i)P(S_i)
+}{
+\sum_j P(E\mid S_j)P(S_j)
+}.
+\]
+
+This produces a normalized posterior belief over the four hidden states.
+
+For example, for one healthy batch the likelihood vector was
+
+\[
+[0.92,\;0.15,\;0.05,\;0.02].
+\]
+
+After combination with the prior, the posterior became approximately
+
+\[
+[0.9677,\;0.0252,\;0.0056,\;0.0014].
+\]
+
+
+\subsection{Cost-Sensitive Policy}
+
+The experimental cost matrix is shown in Table~\ref{tab:costmatrix}.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+ & Healthy & Drift & Format & Corrupt \\
+\midrule
+Accept  & 0     & 200   & 2500  & 1000000 \\
+Repair  & 3000  & 2500  & 200   & 300000 \\
+Isolate & 7000  & 5000  & 4000  & 1500 \\
+Reject  & 25000 & 25000 & 10000 & 500 \\
+\bottomrule
+\end{tabular}
+\caption{Experimental action costs in INR. Values represent simulated consequences rather than observed financial losses.}
+\label{tab:costmatrix}
+\end{table}
+
+The matrix intentionally makes accepting corrupted data substantially more costly than temporarily isolating it. Conversely, unnecessary rejection of healthy or benign data is also costly.
+
+The policy computes the expected loss for all four actions and chooses the minimum. This creates a distinction between \emph{state inference} and \emph{decision quality}: an incorrect maximum-posterior state does not necessarily imply an unsafe action.
+
+
+\subsection{Sequential Belief Revision}
+
+The architecture also permits additional evidence to revise an existing belief. If \(E_1\) has already produced
+
+\[
+P(S\mid E_1),
+\]
+
+and new evidence \(E_2\) arrives, the previous posterior can act as the prior for the next update:
+
+\[
+P(S\mid E_1,E_2)
+\propto
+P(E_2\mid S)P(S\mid E_1).
+\]
+
+Expected losses can then be recomputed using the revised belief.
+
+The current implementation demonstrates this process through a controlled example. It does not yet autonomously decide when additional information should be requested.
+
+
+\section{Experimental Method}
+
+\subsection{Synthetic Benchmark}
+
+The final benchmark contains 40 synthetic payment-data batches with 100 records per batch, giving 4,000 records in total.
+
+The ground-truth distribution is shown in Table~\ref{tab:states}.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{lr}
+\toprule
+State & Batches \\
+\midrule
+Healthy & 24 \\
+Benign Drift & 6 \\
+Format Glitch & 5 \\
+Corrupted & 5 \\
+\midrule
+Total & 40 \\
+\bottomrule
+\end{tabular}
+\caption{Ground-truth distribution in the synthetic benchmark.}
+\label{tab:states}
+\end{table}
+
+The benchmark was constructed specifically for controlled evaluation. Because the hidden state is known, state-inference metrics and realized simulated decision costs can be computed directly.
+
+
+\subsection{Baselines}
+
+Two simple policies provide reference points.
+
+\paragraph{Naive Accept.}
+The first baseline always returns \texttt{ACCEPT}, irrespective of evidence.
+
+\paragraph{Strict Circuit Breaker.}
+The second baseline returns \texttt{REJECT} whenever any of the three derived summary indicators---critical error, format error, or distribution surge---is true. Otherwise, it returns \texttt{ACCEPT}.
+
+All three systems are evaluated using the same cost matrix.
+
+
+\subsection{Caching and Reproducibility}
+
+Successful LLM likelihood estimates are cached for all 40 evaluation batches. Subsequent experiment runs can therefore reuse the same likelihood vectors when evaluating Bayesian updating, baselines, expected-loss decisions, and metrics.
+
+Caching is important because it separates variation in repeated LLM generation from downstream evaluation of the decision policy. It also reduces unnecessary API calls.
+
+Some LLM calls during development reached their generation limit without returning the requested JSON output. Failed responses are not used as likelihood vectors; successful parsed responses are cached.
+
+The repository additionally provides an individual batch-inspection utility that reconstructs evidence, prior, cached likelihoods, posterior belief, expected losses, final action, and realized simulated cost.
+
+
+\section{Results}
+
+\subsection{Decision Cost}
+
+Table~\ref{tab:costresults} reports total simulated decision cost over the 40 batches.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{lr}
+\toprule
+System & Total Simulated Cost \\
+\midrule
+Naive Accept & INR~5,013,700 \\
+Strict Reject & INR~502,500 \\
+LLM + Bayesian & \textbf{INR~68,800} \\
+\bottomrule
+\end{tabular}
+\caption{Total simulated decision cost under the experimental cost matrix.}
+\label{tab:costresults}
+\end{table}
+
+Relative to the two baselines, the final system reduces simulated cost by 98.6\% compared with Naive Accept and 86.3\% compared with Strict Reject.
+
+These percentages are properties of the synthetic benchmark and assumed cost matrix. They should not be interpreted as estimates of financial savings in a deployed system.
+
+
+\subsection{State Inference}
+
+The final system correctly predicts the hidden state for 35 of 40 batches, corresponding to 87.5\% accuracy.
+
+Table~\ref{tab:classification} shows per-state performance.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+State & Prec. & Recall & F1 & N \\
+\midrule
+Healthy       & 91.7 & 91.7 & 91.7 & 24 \\
+Benign Drift  & 100.0 & 50.0 & 66.7 & 6 \\
+Format Glitch & 100.0 & 100.0 & 100.0 & 5 \\
+Corrupted     & 62.5 & 100.0 & 76.9 & 5 \\
+\midrule
+Macro Avg.    & 88.5 & 85.4 & 83.8 & -- \\
+\bottomrule
+\end{tabular}
+\caption{State-inference performance in percent.}
+\label{tab:classification}
+\end{table}
+
+All five corrupted batches were identified as corrupted. However, corrupted precision was only 62.5\%, because three non-corrupted batches were also predicted as corrupted.
+
+The benchmark contains only five corrupted examples. Consequently, the observed 100\% corrupted recall is descriptive of this small test set and does not establish production-level safety.
+
+
+\subsection{Confusion Matrix}
+
+The confusion matrix is shown in Table~\ref{tab:confusion}.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+True / Pred. & H & D & F & C \\
+\midrule
+Healthy       & 22 & 0 & 0 & 2 \\
+Benign Drift  & 2 & 3 & 0 & 1 \\
+Format Glitch & 0 & 0 & 5 & 0 \\
+Corrupted     & 0 & 0 & 0 & 5 \\
+\bottomrule
+\end{tabular}
+\caption{Confusion matrix. H: Healthy, D: Benign Drift, F: Format Glitch, C: Corrupted.}
+\label{tab:confusion}
+\end{table}
+
+The five incorrect state inferences occur on batches 6, 24, 25, 32, and 38.
+
+
+\subsection{Action Distribution}
+
+The three policies behave quite differently.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Action & Naive & Strict & LLM+Bayes \\
+\midrule
+Accept  & 40 & 12 & 15 \\
+Repair  & 0  & 0  & 15 \\
+Isolate & 0  & 0  & 10 \\
+Reject  & 0  & 28 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Action distribution over the 40 test batches.}
+\label{tab:actions}
+\end{table}
+
+The LLM + Bayesian agent does not choose \texttt{REJECT} for any test batch. This is not a hard-coded restriction. Given the posterior beliefs and experimental cost matrix, another action has lower expected loss in every evaluated case.
+
+
+\subsection{Probabilistic Diagnostics}
+
+Across the 40 batches, the average LLM-estimated likelihood assigned to the true state is 0.6465. The average posterior probability assigned to the true state after Bayesian updating is 65.0\%.
+
+Per-state average true-state likelihood and posterior are:
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+State & Avg. Likelihood & Avg. Posterior \\
+\midrule
+Healthy       & 0.5546 & 74.9\% \\
+Benign Drift  & 0.6583 & 41.7\% \\
+Format Glitch & 0.8820 & 53.5\% \\
+Corrupted     & 0.8380 & 56.4\% \\
+\bottomrule
+\end{tabular}
+\caption{Average likelihood and posterior assigned to the true state.}
+\label{tab:probdiag}
+\end{table}
+
+These statistics describe the model's outputs but do not establish probability calibration. A larger evaluation with reliability diagrams or calibration metrics would be required for such a claim.
+
+
+\section{Failure Analysis}
+
+The five incorrect state predictions are informative because they expose different weaknesses in the inference process.
+
+\subsection{Prior Sensitivity}
+
+Batches 6 and 32 have ground-truth state Benign Drift but are predicted as Healthy.
+
+For Batch 6, the LLM likelihoods include
+
+\[
+P(E\mid S_1)=0.25,
+\qquad
+P(E\mid S_2)=0.80.
+\]
+
+Despite the larger likelihood under Benign Drift, the assumed prior places 75\% probability on Healthy and only 12\% on Benign Drift. The resulting posterior is approximately
+
+\[
+P(S_1\mid E)=57.08\%,
+\qquad
+P(S_2\mid E)=29.22\%.
+\]
+
+The same pattern appears in Batch 32, where Healthy receives 45.73\% posterior probability and Benign Drift 39.02\%.
+
+These cases show that an assumed base rate can materially influence the final inference. In a production system, the prior should therefore be estimated from representative historical data rather than selected manually.
+
+
+\subsection{Overreaction to Isolated Anomalies}
+
+Batches 25 and 38 are ground-truth Healthy batches containing a single null receiver among 100 records.
+
+The LLM assigns substantial likelihood to Corrupted in both cases. After Bayesian updating, Batch 25 receives 48.24\% posterior probability for Corrupted, while Batch 38 receives 60.80\%.
+
+Both batches are therefore predicted as Corrupted and assigned \texttt{ISOLATE}.
+
+These failures suggest that the current evidence representation does not sufficiently distinguish between an isolated anomaly and systematic corruption. Useful extensions could include anomaly rates, field optionality, schema context, or comparisons with historical batches.
+
+
+\subsection{Missing Operational Context}
+
+Batch 24 is ground-truth Benign Drift but initially appears compatible with corruption. It contains 57 lowercase currency values, a median amount of 5322.94, and one null receiver.
+
+The LLM initially estimates
+
+\[
+[0.03,\;0.25,\;0.12,\;0.72],
+\]
+
+which produces the posterior
+
+\[
+[0.2294,\;0.3058,\;0.0979,\;0.3670].
+\]
+
+The maximum-posterior state is therefore Corrupted, although with only 36.70\% probability.
+
+The expected losses are:
+
+\begin{align*}
+\mathbb{E}[L(\texttt{ACCEPT})] &= 367278.29,\\
+\mathbb{E}[L(\texttt{REPAIR})] &= 111563.91,\\
+\mathbb{E}[L(\texttt{ISOLATE})] &= 4076.45,\\
+\mathbb{E}[L(\texttt{REJECT})] &= 14541.28.
+\end{align*}
+
+The agent therefore selects \texttt{ISOLATE}. Although the state prediction is incorrect, the decision policy avoids accepting a batch under substantial uncertainty.
+
+
+\section{Sequential Belief-Update Example}
+
+To test whether missing context could revise the Batch 24 inference, additional experimental evidence was supplied:
+
+\begin{quote}
+A producer deployment intentionally changed currency codes to lowercase, the higher transaction amounts were explained by a legitimate promotion, and the single null receiver was described as an optional legacy field.
+\end{quote}
+
+For this additional evidence, the recorded LLM likelihood vector was
+
+\[
+[0.25,\;0.85,\;0.20,\;0.03].
+\]
+
+Using the previous posterior as the prior for the new observation gives:
+
+\[
+P(S_2\mid E_1,E_2)=0.7473
+\]
+
+and
+
+\[
+P(S_4\mid E_1,E_2)=0.0316.
+\]
+
+The complete updated belief is approximately
+
+\[
+[0.1648,\;0.7473,\;0.0563,\;0.0316].
+\]
+
+Thus, Benign Drift increases from 30.58\% to 74.73\%, while Corrupted decreases from 36.70\% to 3.16\%.
+
+The expected losses after the update are:
+
+\begin{align*}
+\mathbb{E}[L(\texttt{ACCEPT})] &= 31938.46,\\
+\mathbb{E}[L(\texttt{REPAIR})] &= 11868.40,\\
+\mathbb{E}[L(\texttt{ISOLATE})] &= 5162.64,\\
+\mathbb{E}[L(\texttt{REJECT})] &= 23380.66.
+\end{align*}
+
+The minimum-loss action remains
+
+\[
+a^*=\texttt{ISOLATE}.
+\]
+
+This example illustrates two aspects of the design. First, additional contextual evidence can materially revise the hidden-state belief. Second, a large change in state belief does not necessarily imply a change in action, because action selection also depends on asymmetric costs.
+
+The example should not be interpreted as autonomous online learning. The additional context was supplied explicitly, and the current agent does not independently determine when information acquisition is worthwhile.
+
+
+\section{Discussion}
+
+\subsection{State Accuracy and Decision Quality}
+
+The experiment illustrates why state prediction and action quality should be evaluated separately.
+
+Batch 24 is a useful example. Its maximum-posterior state is initially incorrect, but the expected-loss policy chooses \texttt{ISOLATE}, limiting the simulated consequence of the mistake. Similarly, some benign cases that are inferred incorrectly can still receive relatively low-cost actions.
+
+This does not make classification accuracy irrelevant. Poor beliefs will eventually lead to poor decisions. However, when errors have asymmetric consequences, accuracy alone does not capture the objective of the system.
+
+
+\subsection{Role of the LLM}
+
+The LLM is deliberately not used as an unrestricted agent. It performs a specific probabilistic interpretation step between deterministic evidence extraction and deterministic Bayesian updating.
+
+This decomposition offers inspectability: for each batch it is possible to observe the extracted evidence, likelihood vector, prior, posterior, expected loss of each action, selected action, and realized simulated cost.
+
+At the same time, the likelihood values remain model-generated estimates. Their calibration, stability across prompts and models, and sensitivity to context require substantially more evaluation.
+
+
+\subsection{Isolation as an Intermediate Action}
+
+The presence of \texttt{ISOLATE} is important. A binary accept/reject system forces a potentially premature irreversible decision. Isolation provides an intermediate response when the cost of accepting possible corruption is high but immediate rejection is also undesirable.
+
+In a more complete agent, isolation could trigger information gathering, schema inspection, producer metadata lookup, or human review. The current prototype demonstrates only the belief-update mechanism that such additional evidence could support.
+
+
+\section{Limitations and Human Control}
+
+The experiment has several important limitations.
+
+First, the benchmark contains only 40 synthetic batches and 4,000 synthetic records. The state distribution and anomaly patterns are constructed rather than sampled from an operational system.
+
+Second, the prior is manually assumed. The failure analysis shows that this prior can substantially affect posterior inference.
+
+Third, the cost matrix is also constructed for the experiment. The reported INR values and cost reductions therefore represent simulated decision consequences, not observed business losses or savings.
+
+Fourth, the LLM likelihood estimates have not been shown to be calibrated. Temperature zero reduces one source of sampling variation but does not guarantee calibrated or deterministic probabilities.
+
+Fifth, the evidence representation is intentionally small. It lacks richer context such as historical distributions, schema metadata, producer changes, field optionality, lineage, and downstream impact.
+
+Finally, the system does not autonomously request additional evidence. Human or external intervention remains necessary when new operational context is required. A production system should also include explicit escalation thresholds and safeguards for high-impact actions.
+
+
+\section{Conclusion and New Questions}
+
+This project studied data-quality triage as a decision problem under uncertainty rather than a direct mapping from validation rules to actions.
+
+The final prototype extracts deterministic evidence, uses an LLM to estimate state-conditional likelihoods, updates an explicit prior using Bayes' rule, and chooses an action by minimizing expected simulated loss.
+
+On a 40-batch synthetic benchmark, the system achieves 87.5\% state-inference accuracy and identifies all five corrupted examples. Under the constructed cost matrix, its total simulated cost is INR~68,800, compared with INR~5,013,700 for always accepting and INR~502,500 for the strict circuit-breaker baseline.
+
+The failure cases are at least as informative as the aggregate metrics. They reveal sensitivity to assumed base rates, difficulty distinguishing isolated anomalies from systematic corruption, and dependence on operational context. In the sequential-update example, additional context changes Benign Drift from 30.58\% to 74.73\% posterior probability and Corrupted from 36.70\% to 3.16\%, while the minimum-cost action remains \texttt{ISOLATE}.
+
+These observations lead to several questions for future work. How should priors be estimated and updated under changing data distributions? Can LLM-produced likelihoods be calibrated against empirical outcomes? When should an agent pay the cost of acquiring additional evidence? How should human review be incorporated into the action space? Finally, how well does the decision formulation transfer from synthetic examples to real operational data-quality incidents?
+
+Answering these questions would require larger datasets, historically grounded priors and costs, stronger calibration evaluation, and testing in realistic operational environments.
+
+
+\section*{AI Use Statement}
+
+Generative AI tools were used during project development for discussion, code assistance, debugging support, experiment design, and drafting/editing of project documentation and this manuscript. The project author selected the problem formulation, constructed and executed the experiments, inspected the implementation and outputs, verified the reported numerical results against the code and dataset, and is responsible for the final content and claims.
+
+
+\section*{Contribution Statement}
+
+Shriyansh Sinha designed and implemented the project, constructed the synthetic evaluation setup, ran and analyzed the experiments, performed the failure analysis, and prepared the manuscript.
+
+
+\section*{Code and Project Materials}
+
+Code, synthetic test data, cached experimental likelihoods, failure analysis, research notes, and reproduction utilities are available at:
+
+\begin{center}
+\url{https://github.com/Shriyansh-20/AI-Native-Learning/tree/main/week1/deliverables/student-project}
+\end{center}
+
+The main evaluation can be reproduced with
+\texttt{python3 -m experiments.run\_experiment}.
+Individual batches can be inspected with
+\texttt{python3 -m experiments.inspect\_batch <id>},
+and the sequential belief-update example can be run with
+\texttt{python3 -m experiments.belief\_update\_demo}.
+
+
+\bibliographystyle{named}
+\bibliography{references}
+
+\end{document}

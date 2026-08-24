@@ -1,0 +1,20 @@
+\begin{thebibliography}{}
+
+\bibitem[\protect\citeauthoryear{Batini \bgroup \em et al.\egroup
+  }{2009}]{batini2009methodologies}
+Carlo Batini, Cinzia Cappiello, Chiara Francalanci, and Andrea Maurino.
+\newblock Methodologies for data quality assessment and improvement.
+\newblock {\em ACM Computing Surveys}, 41(3):1--52, 2009.
+
+\bibitem[\protect\citeauthoryear{Berger}{1985}]{berger1985statistical}
+James~O. Berger.
+\newblock {\em Statistical Decision Theory and Bayesian Analysis}.
+\newblock Springer, 2 edition, 1985.
+
+\bibitem[\protect\citeauthoryear{Chandola \bgroup \em et al.\egroup
+  }{2009}]{chandola2009anomaly}
+Varun Chandola, Arindam Banerjee, and Vipin Kumar.
+\newblock Anomaly detection: A survey.
+\newblock {\em ACM Computing Surveys}, 41(3):1--58, 2009.
+
+\end{thebibliography}
