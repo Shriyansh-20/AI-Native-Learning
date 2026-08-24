@@ -1,284 +1,66 @@
 # Failure Analysis
 
-## Overview
+## Overall Performance
 
-The final **LLM + Bayesian Data Quality Triage Agent** was evaluated on **40 synthetic payment-data batches**.
-
-The purpose of this analysis is not only to report aggregate accuracy, but to inspect where the system failed, identify which component contributed to each failure, and determine whether incorrect state inference also resulted in poor decisions.
-
-The evaluation revealed three main failure patterns:
-
-1. **The assumed prior can overpower evidence for Benign Drift.**
-2. **Isolated critical signals can be overweighted as evidence of corruption.**
-3. **Some drift-vs-corruption cases cannot be resolved from batch statistics alone and require operational context.**
-
-Importantly, incorrect state inference did not always translate into the worst action because the final decision was made separately using expected business loss.
-
----
-
-# 1. Overall State-Inference Performance
-
-The agent correctly inferred the latent state for:
-
-> **35 / 40 test batches**
-
-giving an overall accuracy of:
-
-> ## **87.5%**
-
-### Overall Metrics
+The final **LLM + Bayesian Agent** was evaluated on **40 synthetic payment-data batches**.
 
 | Metric | Result |
 |---|---:|
-| **Accuracy** | **87.5%** |
-| **Macro Precision** | **88.5%** |
-| **Macro Recall** | **85.4%** |
-| **Macro F1** | **83.8%** |
+| Accuracy | **87.5%** |
+| Macro Precision | **88.5%** |
+| Macro Recall | **85.4%** |
+| Macro F1 | **83.8%** |
 
-These metrics summarize state inference only.
-
-They do not yet measure whether the action selected by the agent was economically sensible.
-
----
-
-# 2. Performance by Hidden State
+### Performance by State
 
 | State | Precision | Recall | F1 | Support |
 |---|---:|---:|---:|---:|
 | `S1_HEALTHY` | 91.7% | 91.7% | 91.7% | 24 |
-| `S2_BENIGN_DRIFT` | **100.0%** | **50.0%** | 66.7% | 6 |
-| `S3_FORMAT_GLITCH` | **100.0%** | **100.0%** | **100.0%** | 5 |
+| `S2_BENIGN_DRIFT` | 100.0% | **50.0%** | 66.7% | 6 |
+| `S3_FORMAT_GLITCH` | 100.0% | **100.0%** | 100.0% | 5 |
 | `S4_CORRUPTED` | 62.5% | **100.0%** | 76.9% | 5 |
 
-The strongest performance occurred on `S3_FORMAT_GLITCH`.
+The system correctly inferred **35 of 40 batches**.
 
-All five format-glitch batches were correctly identified.
+Two results stand out:
 
-The system also achieved:
+- All **5/5 corrupted batches were detected**, giving corruption recall of **100%**.
+- `S2_BENIGN_DRIFT` was the hardest state, with only **50% recall**.
 
-> **100% recall on genuinely corrupted batches.**
-
-All **5 / 5** corrupted batches were identified as `S4_CORRUPTED`.
-
-However, corruption precision was only:
-
-> **62.5%**
-
-This means the agent sometimes predicted corruption when the underlying batch was actually healthy or benign drift.
-
-The weakest state was:
-
-> ## `S2_BENIGN_DRIFT`
-
-Only **3 of 6** benign-drift batches were correctly identified, resulting in:
-
-> **50% recall**
-
-This became the most important state-level weakness uncovered by the experiment.
+Because the dataset contains only 40 synthetic cases, these results describe this experiment and should not be interpreted as production guarantees.
 
 ---
 
-# 3. Confusion Matrix
+## Where Did the Agent Fail?
 
-The complete confusion matrix was:
+The five incorrect state predictions were:
 
-| True ↓ / Predicted → | Healthy | Benign Drift | Format Glitch | Corrupted |
-|---|---:|---:|---:|---:|
-| **Healthy** | **22** | 0 | 0 | **2** |
-| **Benign Drift** | **2** | **3** | 0 | **1** |
-| **Format Glitch** | 0 | 0 | **5** | 0 |
-| **Corrupted** | 0 | 0 | 0 | **5** |
+| Batch | Ground Truth | Predicted | Top Posterior | Action |
+|---|---|---|---:|---|
+| 6 | Benign Drift | Healthy | 57.08% | REPAIR |
+| 24 | Benign Drift | Corrupted | 36.70% | ISOLATE |
+| 25 | Healthy | Corrupted | 48.24% | ISOLATE |
+| 32 | Benign Drift | Healthy | 45.73% | REPAIR |
+| 38 | Healthy | Corrupted | 60.80% | ISOLATE |
 
-The matrix makes the failure pattern clearer.
-
-### Healthy
-
-22 / 24 healthy batches were correctly identified.
-
-The remaining two were incorrectly classified as Corrupted.
-
-### Benign Drift
-
-Only 3 / 6 benign-drift batches were correctly identified.
-
-Of the remaining three:
-
-- 2 were classified as Healthy
-- 1 was classified as Corrupted
-
-### Format Glitch
-
-5 / 5 were correctly identified.
-
-### Corrupted
-
-5 / 5 were correctly identified.
-
-Therefore, all five state-inference errors occurred around the boundaries between:
-
-**Healthy ↔ Benign Drift ↔ Corrupted**
-
-rather than Format Glitch.
+Examining these traces revealed three recurring failure modes.
 
 ---
 
-# 4. The Five Incorrect State Inferences
+## Failure Mode 1 — The Prior Can Overpower the Evidence
 
-| Batch | Ground Truth | Predicted | Top Posterior | Action | Realized Simulated Cost |
-|---|---|---|---:|---|---:|
-| **6** | Benign Drift | Healthy | 57.08% | REPAIR | ₹2,500 |
-| **24** | Benign Drift | Corrupted | 36.70% | ISOLATE | ₹5,000 |
-| **25** | Healthy | Corrupted | 48.24% | ISOLATE | ₹7,000 |
-| **32** | Benign Drift | Healthy | 45.73% | REPAIR | ₹2,500 |
-| **38** | Healthy | Corrupted | 60.80% | ISOLATE | ₹7,000 |
+**Affected batches:** 6 and 32
 
-These five errors are not all caused by the same component.
+Both batches were actually `S2_BENIGN_DRIFT`.
 
-Examining the complete decision traces reveals three different failure modes.
+Interestingly, the LLM assigned its highest likelihood to the **correct state** in both cases:
 
----
+| Batch | `P(E \| Healthy)` | `P(E \| Drift)` |
+|---|---:|---:|
+| 6 | 0.25 | **0.80** |
+| 32 | 0.15 | **0.80** |
 
-# 5. Failure Mode 1 — Prior Bias Toward Healthy
-
-### Affected batches
-
-- Batch 6
-- Batch 32
-
-Both batches have ground truth:
-
-> `S2_BENIGN_DRIFT`
-
-but were ultimately predicted as:
-
-> `S1_HEALTHY`
-
-Interestingly, the LLM itself assigned its **highest likelihood to the correct state** in both cases.
-
----
-
-## Batch 6
-
-### Evidence
-
-| Signal | Value |
-|---|---:|
-| Records | 100 |
-| Negative amounts | 0 |
-| Overflow values | 0 |
-| Null receivers | 0 |
-| Slash dates | 0 |
-| Padded statuses | 0 |
-| Lowercase currencies | **65** |
-| Median amount | **7063.195** |
-| Critical error | False |
-| Format error | False |
-| Distribution surge | **True** |
-
-The evidence contains substantial distribution and representation change without critical corruption signals.
-
-### LLM likelihoods
-
-| State | `P(Evidence \| State)` |
-|---|---:|
-| Healthy | 0.25 |
-| **Benign Drift** | **0.80** |
-| Format Glitch | 0.55 |
-| Corrupted | 0.02 |
-
-The LLM correctly considered Benign Drift the most plausible explanation.
-
-However, the experimental prior was:
-
-| State | Prior |
-|---|---:|
-| Healthy | **0.75** |
-| Benign Drift | **0.12** |
-| Format Glitch | 0.08 |
-| Corrupted | 0.05 |
-
-Before normalization, Bayes therefore produces:
-
-\[
-Healthy = 0.75 \times 0.25 = 0.1875
-\]
-
-while:
-
-\[
-Benign\ Drift = 0.12 \times 0.80 = 0.096
-\]
-
-Despite the LLM assigning more than three times the likelihood to Benign Drift, the large Healthy prior dominates.
-
-The resulting posterior becomes:
-
-| State | Posterior |
-|---|---:|
-| **Healthy** | **57.08%** |
-| Benign Drift | 29.22% |
-| Format Glitch | 13.39% |
-| Corrupted | 0.30% |
-
-The final predicted state is therefore incorrectly:
-
-> `S1_HEALTHY`
-
----
-
-## Batch 32
-
-The same pattern appears again.
-
-### Evidence
-
-| Signal | Value |
-|---|---:|
-| Records | 100 |
-| Negative amounts | 0 |
-| Overflow values | 0 |
-| Null receivers | 0 |
-| Slash dates | 0 |
-| Padded statuses | 0 |
-| Lowercase currencies | **49** |
-| Median amount | **3518.74** |
-| Critical error | False |
-| Format error | False |
-| Distribution surge | **True** |
-
-### LLM likelihoods
-
-| State | `P(Evidence \| State)` |
-|---|---:|
-| Healthy | 0.15 |
-| **Benign Drift** | **0.80** |
-| Format Glitch | 0.45 |
-| Corrupted | 0.03 |
-
-Again, the LLM's highest likelihood corresponds to the correct hidden state.
-
-After applying the prior, however:
-
-| State | Posterior |
-|---|---:|
-| **Healthy** | **45.73%** |
-| Benign Drift | 39.02% |
-| Format Glitch | 14.63% |
-| Corrupted | 0.61% |
-
-Healthy narrowly becomes the most probable state.
-
----
-
-## What failed?
-
-These two errors should **not primarily be attributed to the LLM**.
-
-The LLM correctly preferred Benign Drift in both cases.
-
-The error appears after incorporating the experimental prior.
-
-The assumed prior:
+However, the experimental prior strongly favors Healthy:
 
 ```text
 Healthy        75%
@@ -287,404 +69,100 @@ Format Glitch   8%
 Corrupted       5%
 ```
 
-creates a strong initial bias toward Healthy.
+After Bayesian updating, Healthy became the most probable state.
 
-This was deliberately documented as an assumption rather than a measured production distribution.
+This shows that the assumed prior can materially influence the final inference.
 
-The experiment demonstrates why that distinction matters.
+### Improvement
 
-> **A poorly estimated prior can overpower otherwise useful evidence.**
-
----
-
-## Improvement
-
-A production system should estimate priors from historical labelled batches rather than manually assigning them.
-
-Future experiments should also perform **prior-sensitivity analysis**.
-
-For example, the same benchmark could be evaluated under:
-
-```text
-Current prior
-75 / 12 / 8 / 5
-
-Uniform prior
-25 / 25 / 25 / 25
-
-Moderate healthy prior
-50 / 20 / 15 / 15
-
-Empirical prior
-estimated from historical batches
-```
-
-This would reveal how much of the system's behaviour comes from the evidence versus the assumed base rates.
+Estimate priors from historical labelled data and test the system under alternative priors rather than relying on a single assumed distribution.
 
 ---
 
-# 6. Failure Mode 2 — Isolated Critical Signals Were Overweighted
+## Failure Mode 2 — Isolated Critical Signals Were Overweighted
 
-### Affected batches
+**Affected batches:** 25 and 38
 
-- Batch 25
-- Batch 38
+Both batches were labelled `S1_HEALTHY`.
 
-Both batches have ground truth:
+Each contained only **one null receiver among 100 records**, while the remaining extracted signals were normal:
 
-> `S1_HEALTHY`
-
-but were predicted as:
-
-> `S4_CORRUPTED`
-
-The traces show a strikingly similar pattern.
-
----
-
-## Batch 25
-
-### Evidence
-
-```text
-100 records
-
-Negative amounts      0
-Overflow values       0
-Null receivers        1
-Slash dates           0
-Padded statuses       0
-Lowercase currencies  0
-
-Median amount         793.54
-
-Critical error        True
-Format error          False
-Distribution surge    False
-```
-
-The only detected critical anomaly is:
-
-> **1 null receiver among 100 records**
-
-Despite the rest of the batch appearing normal, the LLM estimated:
-
-| State | Likelihood |
-|---|---:|
-| Healthy | **0.04** |
-| Benign Drift | 0.05 |
-| Format Glitch | 0.12 |
-| **Corrupted** | **0.85** |
-
-After Bayesian updating:
-
-| State | Posterior |
-|---|---:|
-| Healthy | 34.05% |
-| Benign Drift | 6.81% |
-| Format Glitch | 10.90% |
-| **Corrupted** | **48.24%** |
-
-The agent therefore predicts Corrupted.
-
----
-
-## Batch 38
-
-Batch 38 shows almost exactly the same pattern.
-
-### Evidence
-
-```text
-100 records
-
-Negative amounts      0
-Overflow values       0
-Null receivers        1
-Slash dates           0
-Padded statuses       0
-Lowercase currencies  0
-
-Median amount         882.59
-
-Critical error        True
-Format error          False
-Distribution surge    False
-```
-
-Again, the only critical signal is one null receiver.
-
-The LLM estimates:
-
-| State | Likelihood |
-|---|---:|
-| Healthy | **0.02** |
-| Benign Drift | 0.05 |
-| Format Glitch | 0.08 |
-| **Corrupted** | **0.85** |
-
-The resulting posterior is:
-
-| State | Posterior |
-|---|---:|
-| Healthy | 21.46% |
-| Benign Drift | 8.58% |
-| Format Glitch | 9.16% |
-| **Corrupted** | **60.80%** |
-
-Again:
-
-> `S1_HEALTHY → S4_CORRUPTED`
-
----
-
-## What failed?
-
-These two cases suggest that the evidence reasoner can overweight the **presence** of a critical signal without sufficiently considering its **prevalence and surrounding context**.
-
-The distinction matters.
-
-There is a large difference between:
-
-```text
-1 / 100 null receivers
-```
-
-and:
-
-```text
-80 / 100 null receivers
-```
-
-Yet a boolean feature such as:
-
-```text
-has_critical_error = True
-```
-
-can make those situations appear superficially similar.
-
-The raw count was also available to the LLM, but the resulting likelihoods suggest that the isolated null was still treated as very strong evidence of corruption.
-
-The surrounding evidence was otherwise healthy:
-
-- no negative values,
+- no negative amounts,
 - no overflow values,
-- no formatting anomalies,
+- no format anomalies,
 - no currency shift,
 - no distribution surge.
 
----
-
-## Improvement
-
-The reasoning prompt should explicitly instruct the LLM to evaluate:
-
-- anomaly frequency,
-- anomaly severity,
-- percentage of affected records,
-- co-occurring anomalies,
-- whether the rest of the batch is internally consistent,
-- whether one isolated anomaly is sufficient to justify corruption.
-
-For example:
-
-> When evaluating evidence, consider not only whether an anomaly exists, but also its prevalence, severity, co-occurring signals, and the consistency of the remaining records. Do not treat one isolated anomaly as equivalent to batch-wide corruption.
-
-The evidence representation could also explicitly expose normalized rates:
+Despite this, the LLM assigned:
 
 ```text
-null_receiver_rate = 0.01
-lowercase_currency_rate = 0.00
-negative_amount_rate = 0.00
+P(Evidence | Corrupted) = 0.85
 ```
 
-rather than relying only on counts and boolean summary flags.
+in both cases.
+
+The resulting corruption posteriors were:
+
+- Batch 25 → **48.24%**
+- Batch 38 → **60.80%**
+
+This suggests that the reasoner gave too much weight to the presence of a critical anomaly without sufficiently considering its **prevalence and surrounding evidence**.
+
+### Improvement
+
+Make anomaly rates explicit and instruct the reasoner to consider:
+
+**frequency + severity + co-occurring signals + overall batch consistency**
+
+rather than only whether an anomaly exists.
 
 ---
 
-# 7. Failure Mode 3 — Drift Requires Operational Context
+## Failure Mode 3 — Drift Can Require Operational Context
 
-### Affected batch
+**Affected batch:** 24
 
-- Batch 24
-
-Batch 24 is different from the previous failure modes.
-
-Its evidence genuinely supports multiple competing explanations.
-
-Ground truth:
-
-> `S2_BENIGN_DRIFT`
-
-Initial prediction:
-
-> `S4_CORRUPTED`
-
----
-
-## Evidence
+Batch 24 contained competing signals:
 
 ```text
-100 records
-
 57 lowercase currencies
-Median amount = 5322.94
-
+High median amount
+Distribution surge
 1 null receiver
-
-Critical error       = True
-Format error         = False
-Distribution surge   = True
 ```
 
-This creates competing interpretations.
+The true state was `S2_BENIGN_DRIFT`, but the initial posterior ranked `S4_CORRUPTED` highest at **36.70%**.
 
-### Evidence supporting Benign Drift
+We then introduced additional experimental context explaining that:
 
-- 57 lowercase currency values
-- substantial amount-distribution shift
-- no negative values
-- no overflow values
+- the lowercase currencies came from an intentional producer change,
+- the amount surge came from a legitimate promotion,
+- the null receiver came from an optional legacy field.
 
-### Evidence supporting Corruption
+After sequential belief updating:
 
-- one null receiver
-- critical-error flag
+| State | Before | After |
+|---|---:|---:|
+| Benign Drift | 30.58% | **65.59%** |
+| Corrupted | 36.70% | **4.37%** |
 
-The LLM estimated:
+This suggests that batch statistics alone may sometimes be insufficient to distinguish legitimate operational change from corruption.
 
-| State | Likelihood |
-|---|---:|
-| Healthy | 0.03 |
-| Benign Drift | 0.25 |
-| Format Glitch | 0.12 |
-| **Corrupted** | **0.72** |
+### Improvement
 
-After Bayesian updating:
+Allow the agent to incorporate additional evidence such as deployment history, producer context, business events, human review, or new validation results.
 
-| State | Posterior |
-|---|---:|
-| Healthy | 22.94% |
-| Benign Drift | 30.58% |
-| Format Glitch | 9.79% |
-| **Corrupted** | **36.70%** |
-
-Corruption wins, but only narrowly.
-
-The posterior is highly uncertain:
-
-```text
-Corrupted       36.70%
-Benign Drift    30.58%
-Healthy         22.94%
-Format Glitch    9.79%
-```
+This motivates the **new-evidence / belief-update loop** in the architecture.
 
 ---
 
-## Additional Context Experiment
+## Did Incorrect Inference Lead to Bad Actions?
 
-We then deliberately supplied additional contextual evidence:
+Not necessarily.
 
-> A producer deployment earlier today intentionally changed currency codes to lowercase, and the higher transaction amounts are explained by a legitimate promotion. The single null receiver is known to be caused by an optional legacy field.
+The five incorrect state predictions resulted in:
 
-This clue was **constructed for the experiment** to test sequential belief updating.
-
-It was not obtained from a real production incident.
-
-The LLM estimated:
-
-| State | `P(New Evidence \| State)` |
-|---|---:|
-| Healthy | 0.40 |
-| **Benign Drift** | **0.90** |
-| Format Glitch | 0.35 |
-| Corrupted | 0.05 |
-
-Using the previous posterior as the new prior produced:
-
-| State | Before | → | After |
-|---|---:|:---:|---:|
-| Healthy | 22.94% | → | 21.87% |
-| **Benign Drift** | **30.58%** | → | **65.59%** |
-| Format Glitch | 9.79% | → | 8.17% |
-| **Corrupted** | **36.70%** | → | **4.37%** |
-
-The dominant state changes from:
-
-```text
-CORRUPTED
-36.70%
-```
-
-to:
-
-```text
-BENIGN DRIFT
-65.59%
-```
-
-which matches the hidden ground truth.
-
----
-
-## What failed?
-
-The initial evidence did not contain enough **operational context** to explain why the distribution had changed.
-
-The system could observe:
-
-> "The distribution changed."
-
-But it could not initially know:
-
-> "The distribution changed because of an intentional deployment and legitimate promotion."
-
-This exposes a fundamental limitation of reasoning from batch statistics alone.
-
-Some anomalies cannot be classified correctly without information about the process that generated them.
-
----
-
-## Improvement
-
-Future evidence sources could include:
-
-- producer deployment history,
-- recent schema/configuration changes,
-- business-event calendars,
-- upstream pipeline status,
-- previous batch trends,
-- human reviewer input,
-- producer explanations,
-- downstream validation results.
-
-This finding directly motivates the **new-evidence / feedback loop** in the agent architecture.
-
-The agent should not necessarily make a permanent decision from the first observation.
-
-When uncertainty remains high, it can gather additional evidence and update its existing belief.
-
----
-
-# 8. Policy Behaviour Under Inference Failure
-
-The system is not designed solely as a state classifier.
-
-After estimating the posterior belief, it independently evaluates the expected loss of each action:
-
-\[
-E[\text{Loss}(a)]
-=
-\sum_s P(s \mid E) \times Cost(a,s)
-\]
-
-This separation matters when inference is wrong.
-
-The five incorrect state predictions produced:
-
-| Batch | Inference Error | Final Action | Realized Simulated Cost |
+| Batch | State Error | Action | Realized Simulated Cost |
 |---|---|---|---:|
 | 6 | Drift → Healthy | REPAIR | ₹2,500 |
 | 24 | Drift → Corrupted | ISOLATE | ₹5,000 |
@@ -692,338 +170,75 @@ The five incorrect state predictions produced:
 | 32 | Drift → Healthy | REPAIR | ₹2,500 |
 | 38 | Healthy → Corrupted | ISOLATE | ₹7,000 |
 
-Notably, none of these five state-inference errors resulted in a `REJECT` decision.
+None of the five inference failures resulted in an automatic `REJECT`.
 
-This is particularly visible in Batches 25 and 38.
-
-Both were incorrectly predicted as corrupted.
-
-A simple classifier-to-action system might use:
+This happens because the agent does not directly map:
 
 ```text
-Predicted Corrupted
-        ↓
-      REJECT
+Predicted State → Action
 ```
 
-The expected-loss policy did not do this.
+Instead, it evaluates expected loss across the **full posterior belief**.
 
-Instead, uncertainty over the remaining states made `ISOLATE` cheaper than `REJECT`.
+This helped contain some inference errors through more cautious actions such as `REPAIR` and `ISOLATE`.
 
 ---
 
-# 9. Decision-Level Performance
+## Decision-Level Result
 
-Because this is a decision agent, state-inference accuracy is only one evaluation dimension.
-
-The experiment also compared the total simulated business cost of different policies.
+State accuracy is only one part of the evaluation because the system is ultimately a **decision agent**.
 
 | System | Total Simulated Cost |
 |---|---:|
-| Naive ACCEPT Baseline | **₹5,013,700** |
-| Strict Reject Baseline | **₹502,500** |
+| Naive ACCEPT | ₹5,013,700 |
+| Strict Reject | ₹502,500 |
 | **LLM + Bayesian Agent** | **₹68,800** |
 
-The final system achieved:
+The final system reduced simulated cost by:
 
-| Comparison | Reduction |
-|---|---:|
-| vs Naive ACCEPT | **98.6%** |
-| vs Strict Reject | **86.3%** |
+- **98.6%** compared with Naive ACCEPT
+- **86.3%** compared with Strict Reject
 
-This is important because the state classifier was not perfect:
-
-> **State accuracy = 87.5%**
-
-Yet the resulting decision cost was substantially lower than both simple baselines.
-
-This demonstrates the distinction between:
-
-> **Prediction quality**
-
-and
-
-> **Decision quality**
-
-A wrong state prediction does not necessarily imply the worst possible action.
-
-Likewise, maximizing classification accuracy is not automatically equivalent to minimizing business loss.
-
-The objective of the agent is therefore:
-
-> **Make the lowest-expected-cost decision given the current uncertainty.**
+These values come from the experimental cost matrix and should be interpreted as **simulated relative decision costs**, not measured financial savings.
 
 ---
 
-# 10. Safety-Critical Performance
+## Key Improvements Identified
 
-For the most dangerous state, `S4_CORRUPTED`:
+The failure analysis suggests four main improvements:
 
-| Metric | Result |
-|---|---:|
-| Precision | 62.5% |
-| **Recall** | **100.0%** |
-| F1 | 76.9% |
-| Support | 5 |
+1. **Learn priors from historical data** rather than assuming them.
+2. **Represent anomaly prevalence explicitly**, not only anomaly presence.
+3. **Use operational context** when drift and corruption are difficult to distinguish.
+4. **Evaluate likelihood calibration and generalization** on a larger labelled dataset.
 
-All five corrupted batches were detected.
+---
+
+## Takeaway
+
+The five failures were not all simply "LLM mistakes."
+
+They came from different parts of the reasoning system:
 
 ```text
-True Corrupted Batches:      5
-Detected as Corrupted:       5
-Missed Corrupted Batches:    0
+Batches 6, 32
+        ↓
+Prior assumption
+overpowered drift evidence
+
+Batches 25, 38
+        ↓
+Isolated anomaly
+overweighted by LLM
+
+Batch 24
+        ↓
+Insufficient
+operational context
 ```
 
-Within this synthetic benchmark, the system therefore had **no false negatives for corruption**.
+The experiment therefore highlights why the system separates:
 
-However, this safety came with false positives:
+**Evidence Interpretation → Belief Updating → Decision Policy**
 
-Healthy and benign-drift batches were sometimes classified as corrupted.
-
-This explains the relatively low corruption precision of 62.5%.
-
-The system therefore currently behaves more conservatively around potential corruption.
-
-Given the small synthetic dataset, these numbers should **not** be interpreted as production safety guarantees.
-
----
-
-# 11. What We Learned From the Failures
-
-The five failures reveal different weaknesses at different layers of the system.
-
-| Failure | Main Layer | Lesson |
-|---|---|---|
-| Batch 6 | Prior / Bayes | Healthy prior overpowered correct drift evidence |
-| Batch 32 | Prior / Bayes | Healthy prior overpowered correct drift evidence |
-| Batch 25 | LLM interpretation | Isolated null was overweighted |
-| Batch 38 | LLM interpretation | Isolated null was overweighted |
-| Batch 24 | Available evidence | Operational context was missing |
-
-This distinction is useful because it prevents treating every wrong prediction as simply:
-
-> "The LLM was wrong."
-
-Instead, the system can fail because of:
-
-```text
-Evidence
-   │
-   ├── insufficient context
-   │
-   ▼
-LLM Interpretation
-   │
-   ├── likelihood estimation error
-   │
-   ▼
-Bayesian Update
-   │
-   ├── incorrect / poorly estimated prior
-   │
-   ▼
-Decision Policy
-   │
-   ├── incorrect cost assumptions
-   │
-   ▼
-Action
-```
-
-Different failure sources require different fixes.
-
----
-
-# 12. Improvements Identified
-
-The experiment suggests several concrete improvements.
-
-### 1. Learn the prior from historical data
-
-The current:
-
-```text
-75% Healthy
-12% Benign Drift
- 8% Format Glitch
- 5% Corrupted
-```
-
-distribution is an experimental assumption.
-
-Production priors should be estimated from observed historical frequencies.
-
----
-
-### 2. Run prior-sensitivity experiments
-
-The same benchmark should be evaluated using different priors to determine how sensitive predictions and decisions are to the assumed base rates.
-
-This is particularly important because Batches 6 and 32 demonstrate that the current prior can change the winning state even when the LLM strongly prefers the correct explanation.
-
----
-
-### 3. Represent anomaly prevalence explicitly
-
-Instead of only:
-
-```text
-c_null_receiver = 1
-has_critical_error = True
-```
-
-the evidence representation could include:
-
-```text
-null_receiver_rate = 1%
-```
-
-This makes the difference between isolated and batch-wide failures explicit.
-
----
-
-### 4. Improve the LLM reasoning instructions
-
-The LLM should explicitly consider:
-
-- prevalence,
-- severity,
-- co-occurrence,
-- surrounding healthy evidence,
-- alternative explanations,
-- batch size.
-
-This may reduce overreaction to isolated anomalies.
-
----
-
-### 5. Gather operational context
-
-Distribution changes should be compared against:
-
-- deployments,
-- schema changes,
-- business events,
-- producer behaviour,
-- historical batch patterns.
-
-This is especially important for distinguishing Benign Drift from Corruption.
-
----
-
-### 6. Use sequential evidence gathering
-
-When posterior uncertainty remains high, the agent should be able to obtain additional evidence rather than immediately committing to an irreversible decision.
-
-The Batch 24 experiment demonstrates that new context can substantially revise the posterior.
-
----
-
-### 7. Calibrate LLM likelihood estimates
-
-The LLM currently generates values interpreted as:
-
-\[
-P(Evidence \mid State)
-\]
-
-These values have not yet been demonstrated to be statistically calibrated.
-
-A larger labelled benchmark would allow calibration analysis.
-
----
-
-### 8. Expand the evaluation dataset
-
-The current benchmark contains only:
-
-> **40 synthetic batches**
-
-including:
-
-- 24 Healthy
-- 6 Benign Drift
-- 5 Format Glitch
-- 5 Corrupted
-
-This is sufficient for demonstrating the mechanism but too small for strong generalization claims.
-
-Future evaluation should include more cases, especially ambiguous Benign Drift examples.
-
----
-
-### 9. Validate the cost matrix
-
-The current rupee costs are simulated assumptions.
-
-Real production costs should ideally be estimated from:
-
-- downstream incident severity,
-- reviewer time,
-- pipeline downtime,
-- repair effort,
-- lost transactions,
-- false-rejection consequences.
-
-The expected-loss policy is only as meaningful as the costs supplied to it.
-
----
-
-# 13. Final Takeaway
-
-The experiment achieved:
-
-> **87.5% state-inference accuracy**
-
-with:
-
-> **100% recall on the five corrupted test batches**
-
-and a total simulated decision cost of:
-
-> **₹68,800**
-
-compared with:
-
-> ₹5,013,700 for Naive ACCEPT  
-> ₹502,500 for Strict Reject
-
-But the failures are more informative than the headline numbers.
-
-They reveal three concrete weaknesses:
-
-```text
-1. PRIOR
-   Healthy prior can overpower Benign Drift evidence.
-
-2. INTERPRETATION
-   Isolated critical anomalies can be overweighted.
-
-3. EVIDENCE
-   Batch statistics alone may not explain legitimate operational drift.
-```
-
-They also reveal a useful property of the architecture:
-
-```text
-Wrong inference
-      │
-      ▼
-Uncertainty retained
-      │
-      ▼
-Expected-loss policy
-      │
-      ▼
-Cautious action
-```
-
-All five state-inference errors resulted in either `REPAIR` or `ISOLATE`, rather than an automatic `REJECT`.
-
-The main lesson is therefore:
-
-> **A useful decision agent should not only ask, "Which state is most likely?"**
->
-> **It should ask, "Given what I currently believe and the cost of being wrong, what is the best action to take?"**
-
-The failure analysis also shows where the next iteration should focus: **better priors, prevalence-aware evidence interpretation, richer operational context, calibrated likelihoods, and more evaluation data.**
+The agent achieved **87.5% state accuracy**, but more importantly, the expected-loss policy could still make cautious decisions when the most likely state was wrong.
